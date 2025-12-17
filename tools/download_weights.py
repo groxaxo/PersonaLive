@@ -46,8 +46,7 @@ def prepare_vae():
 
 def prepare_personalive():
     print(f"Preparing personalive weights...")
-    local_dir = "./pretrained_weights/personalive"
-    os.makedirs(local_dir, exist_ok=True)
+
     for hub_file in [
         "pretrained_weights/personalive/denoising_unet.pth",
         "pretrained_weights/personalive/motion_encoder.pth",
@@ -57,7 +56,7 @@ def prepare_personalive():
         "pretrained_weights/personalive/temporal_module.pth",
     ]:
         path = Path(hub_file)
-        saved_path = local_dir / PurePosixPath(path.name)
+        saved_path = PurePosixPath(path.name)
         if os.path.exists(saved_path):
             continue
 
@@ -65,7 +64,7 @@ def prepare_personalive():
             repo_id="huaichang/PersonaLive",
             subfolder=PurePosixPath(path.parent),
             filename=PurePosixPath(path.name),
-            local_dir=local_dir,
+            local_dir="./",
         )
 
 if __name__ == '__main__':
