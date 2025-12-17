@@ -17,6 +17,7 @@
 ## 📋 TODO
 - [ ] Fix bugs (If you encounter any issues, please feel free to open an issue or contact me! 🙏)
 - [ ] Enhance WebUI (Support reference image replacement).
+- [x] **[2025.12.17]** 🔥 [ComfyUI](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
 - [x] **[2025.12.15]** 🔥 Release `paper`!
 - [x] **[2025.12.12]** 🔥 Release `inference code`, `config` and `pretrained weights`!
 
@@ -127,13 +128,15 @@ then open `http://0.0.0.0:7860` in your browser. (*If `http://0.0.0.0:7860` does
 1. Lower the "Driving FPS" setting in the WebUI to reduce the computational workload.
 2. You can increase the multiplier (e.g., set to `num_frames_needed * 4` or higher) to better match your device's inference speed. https://github.com/GVCLab/PersonaLive/blob/6953d1a8b409f360a3ee1d7325093622b29f1e22/webcam/util.py#L73
 
-## 📚 Community Guides
+## 📚 Community Contribution
 
-Special thanks to the community for providing helpful setups! 🍻
+Special thanks to the community for providing helpful setups! 🥂
 
 * **Windows + RTX 50-Series Guide**: Thanks to [@dknos](https://github.com/dknos) for providing a [detailed guide](https://github.com/GVCLab/PersonaLive/issues/10#issuecomment-3662785532) on running this project on Windows with Blackwell GPUs.
 
 * **TensorRT on Windows**: If you are trying to convert TensorRT models on Windows, [this discussion](https://github.com/GVCLab/PersonaLive/issues/8) might be helpful. Special thanks to [@MaraScott](https://github.com/MaraScott) and [@Jeremy8776](https://github.com/Jeremy8776) for their insights.
+  
+* **ComfyUI**: Thanks to [@okdalto](https://github.com/okdalto) for helping implement the ComfyUI support.
 
 
 ## ⭐ Citation
