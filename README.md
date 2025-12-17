@@ -118,25 +118,22 @@ python inference_online.py --acceleration none (for RTX 50-Series) or xformers o
 then open `http://0.0.0.0:7860` in your browser. (*If `http://0.0.0.0:7860` does not work well, try `http://localhost:7860`)
 
 **How to use**: Upload Image ➡️ Fuse Reference ➡️ Start Animation ➡️ Enjoy! 🎉
+<div align="center">
+  <img src="assets/guide.png" alt="PersonaLive" width="60%">
+</div>
 
 **Regarding Latency**: Latency varies depending on your device's computing power. You can try the following methods to optimize it:
 
 1. Lower the "Driving FPS" setting in the WebUI to reduce the computational workload.
 2. You can increase the multiplier (e.g., set to `num_frames_needed * 4` or higher) to better match your device's inference speed. https://github.com/GVCLab/PersonaLive/blob/6953d1a8b409f360a3ee1d7325093622b29f1e22/webcam/util.py#L73
 
-<div align="center">
-  <img src="assets/guide.png" alt="PersonaLive" width="70%">
-</div>
-
-
-
 ## 📚 Community Guides
 
 Special thanks to the community for providing helpful setups! 🍻
 
-* **Windows + RTX 50-Series Guide**: Thanks to @dknos for providing a [detailed guide](https://github.com/GVCLab/PersonaLive/issues/10#issuecomment-3662785532) on running this project on Windows with Blackwell GPUs.
+* **Windows + RTX 50-Series Guide**: Thanks to [@dknos](https://github.com/dknos) for providing a [detailed guide](https://github.com/GVCLab/PersonaLive/issues/10#issuecomment-3662785532) on running this project on Windows with Blackwell GPUs.
 
-* **TensorRT on Windows**: If you are trying to convert TensorRT models on Windows, [this discussion](https://github.com/GVCLab/PersonaLive/issues/8) might be helpful. Special thanks to @MaraScott and @Jeremy8776 for their insights.
+* **TensorRT on Windows**: If you are trying to convert TensorRT models on Windows, [this discussion](https://github.com/GVCLab/PersonaLive/issues/8) might be helpful. Special thanks to [@MaraScott](https://github.com/MaraScott) and [@Jeremy8776](https://github.com/Jeremy8776) for their insights.
 
 
 ## ⭐ Citation
