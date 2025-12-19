@@ -4,7 +4,7 @@
 
 <h2>Expressive Portrait Image Animation for Live Streaming</h2>
 
-#### [Zhiyuan Li<sup>1,2,3</sup>](https://huai-chang.github.io/) · [Chi-Man Pun<sup>1</sup>](https://cmpun.github.io/) 📪 · [Chen Fang<sup>2</sup>](http://fangchen.org/) · [Jue Wang<sup>2</sup>](https://scholar.google.com/citations?user=Bt4uDWMAAAAJ&hl=en) · [Xiaodong Cun<sup>3</sup>](https://vinthony.github.io/academic/) 📪
+#### [Zhiyuan Li<sup>1,2,3</sup>](https://huai-chang.github.io/) · [Chi-Man Pun<sup>1,📪</sup>](https://cmpun.github.io/) · [Chen Fang<sup>2</sup>](http://fangchen.org/) · [Jue Wang<sup>2</sup>](https://scholar.google.com/citations?user=Bt4uDWMAAAAJ&hl=en) · [Xiaodong Cun<sup>3,📪</sup>](https://vinthony.github.io/academic/) 
 <sup>1</sup> University of Macau  &nbsp;&nbsp; <sup>2</sup> [Dzine.ai](https://www.dzine.ai/)  &nbsp;&nbsp; <sup>3</sup> [GVC Lab, Great Bay University](https://gvclab.github.io/)
 
 <a href='https://arxiv.org/abs/2512.11253'><img src='https://img.shields.io/badge/ArXiv-2512.11253-red'></a> <a href='https://huggingface.co/huaichang/PersonaLive'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-ffc107'></a> [![GitHub](https://img.shields.io/github/stars/GVCLab/PersonaLive?style=social)](https://github.com/GVCLab/PersonaLive)
@@ -15,12 +15,12 @@
 </div>
 
 ## 📋 TODO
-- [ ] If you find PersonaLive useful or interesting, please give us a Star 🌟! Your support drives us to keep improving. 🍻
+- [ ] If you find PersonaLive useful or interesting, please give us a Star🌟! Your support drives us to keep improving.🍻
 - [ ] Fix bugs (If you encounter any issues, please feel free to open an issue or contact me! 🙏)
 - [ ] Enhance WebUI (Support reference image replacement).
 - [x] **[2025.12.17]** 🔥 [ComfyUI-PersonaLive](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
 - [x] **[2025.12.15]** 🔥 Release `paper`!
-- [x] **[2025.12.12]** 🔥 Release `inference code`, `config` and `pretrained weights`!
+- [x] **[2025.12.12]** 🔥 Release `inference code`, `config`, and `pretrained weights`!
 
 ## ⚙️ Framework
 <img src="assets/overview.png" alt="Image 1" width="100%">
