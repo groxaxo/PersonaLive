@@ -15,9 +15,10 @@
 </div>
 
 ## 📋 TODO
-- [ ] If you find PersonaLive useful or interesting, please give us a Star🌟! Your support drives us to keep improving.🍻
+- [ ] If you find PersonaLive useful or interesting, please give us a Star🌟! Your support drives us to keep improving.
 - [ ] Fix bugs (If you encounter any issues, please feel free to open an issue or contact me! 🙏)
 - [ ] Enhance WebUI (Support reference image replacement).
+- [x] **[2025.12.22]** 🔥 Supported streaming strategy in offline inference to generate long videos on 12GB VRAM!
 - [x] **[2025.12.17]** 🔥 [ComfyUI-PersonaLive](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
 - [x] **[2025.12.15]** 🔥 Release `paper`!
 - [x] **[2025.12.12]** 🔥 Release `inference code`, `config`, and `pretrained weights`!

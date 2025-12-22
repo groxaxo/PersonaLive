@@ -697,3 +697,266 @@ class Pose2VideoPipeline(DiffusionPipeline):
             return images
 
         return Pose2VideoPipelineOutput(videos=images)
+
+class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
+    def __init__(
+        self,
+        vae,
+        # vae_tiny,
+        image_encoder,
+        reference_unet,
+        denoising_unet,
+        motion_encoder,
+        pose_encoder,
+        pose_guider,
+        scheduler: Union[
+            DDIMScheduler,
+            PNDMScheduler,
+            LMSDiscreteScheduler,
+            EulerDiscreteScheduler,
+            EulerAncestralDiscreteScheduler,
+            DPMSolverMultistepScheduler,
+        ],
+    ):
+        super().__init__(
+            vae=vae,
+            # vae_tiny=vae_tiny,
+            image_encoder=image_encoder,
+            reference_unet=reference_unet,
+            denoising_unet=denoising_unet,
+            motion_encoder=motion_encoder,
+            pose_encoder=pose_encoder,
+            pose_guider=pose_guider,
+            scheduler=scheduler,
+        )
+
+    def decode_latents(self, latents, decode_chunk_size=16):
+        video_length = latents.shape[2]
+        latents = 1 / 0.18215 * latents
+        latents = rearrange(latents, "b c f h w -> (b f) c h w")
+        video = []
+        for frame_idx in range(0, latents.shape[0], decode_chunk_size):
+            video.append(self.vae.decode(latents[frame_idx : frame_idx + decode_chunk_size]).sample)
+        video = torch.cat(video)
+        video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
+        video = (video / 2 + 0.5).clamp(0, 1)
+        # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
+        video = video.cpu().float()
+        return video
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        tgt_images,
+        ref_image,
+        face_images,
+        ref_face_image,
+        width,
+        height,
+        video_length,
+        num_inference_steps,
+        guidance_scale,
+        eta: float = 0.0,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        output_type: Optional[str] = "tensor",
+        return_dict: bool = True,
+        temporal_window_size = 4,
+        temporal_adaptive_step = 4,
+        temporal_kv_cache=True,
+        init_latents=None,
+        **kwargs,
+    ):
+        assert num_inference_steps % temporal_adaptive_step == 0, "temporal_adaptive_step should be divisor of num_inference_steps"
+        assert video_length % temporal_window_size == 0, "temporal_window_size should be divisor of video_length"
+        # Default height and width to unet
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
+
+        device = self._execution_device
+
+        # Prepare timesteps
+        timesteps = torch.tensor([999, 666, 333, 0], device=device).long()
+        self.scheduler.set_step_length(333)
+        jump = num_inference_steps // temporal_adaptive_step
+        windows = video_length // temporal_window_size
+
+        batch_size = 1
+
+        # Prepare clip image embeds
+        clip_image = self.clip_image_processor.preprocess(
+            ref_image.resize((224, 224)), return_tensors="pt"
+        ).pixel_values
+        clip_image_embeds = self.image_encoder(
+            clip_image.to(device, dtype=self.image_encoder.dtype)
+        ).image_embeds
+        image_prompt_embeds = clip_image_embeds.unsqueeze(1)
+
+        reference_control_writer = ReferenceAttentionControl(
+            self.reference_unet,
+            do_classifier_free_guidance=False,
+            mode="write",
+            batch_size=batch_size,
+            fusion_blocks="full",
+        )
+        reference_control_reader = ReferenceAttentionControl(
+            self.denoising_unet,
+            do_classifier_free_guidance=False,
+            mode="read",
+            batch_size=batch_size,
+            fusion_blocks="full",
+            cache_kv=temporal_kv_cache,
+        )
+
+        # Prepare extra step kwargs.
+        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+
+        # Prepare ref image latents
+        ref_image_tensor = self.ref_image_processor.preprocess(
+            ref_image, height=height, width=width
+        )  # (bs, c, width, height)
+        ref_image_tensor = ref_image_tensor.to(
+            dtype=self.vae.dtype, device=self.vae.device
+        )
+        ref_image_latents = self.vae.encode(ref_image_tensor).latent_dist.mean
+        ref_image_latents = ref_image_latents * 0.18215  # (b, 4, h, w)
+
+        ref_cond_tensor = self.cond_image_processor.preprocess(
+            ref_image, height=256, width=256
+        ).to(device=device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
+        ref_cond_tensor = ref_cond_tensor / 2 + 0.5 # to [0, 1]
+
+        ref_face_cond_tensor = self.cond_image_processor.preprocess(
+            ref_face_image, height=224, width=224
+        ).to(device=device, dtype=self.motion_encoder.dtype)
+        neg_motion_hidden_states = self.motion_encoder(ref_face_cond_tensor.unsqueeze(2))    # [b, c]
+
+        # initialize latents [1,4,12,64,64]
+        padding_num = (temporal_adaptive_step - 1) * temporal_window_size
+        init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
+        init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(temporal_window_size, dim=0)
+        noise = torch.randn_like(init_latents)
+        noise_latents = self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
+
+        motion_bank = neg_motion_hidden_states
+        add_flag = False
+        final_videos = []
+
+        # padding tgt_images and face_images
+        tgt_images.extend(tgt_images[-padding_num-1:-1][::-1])
+        face_images.extend(face_images[-padding_num-1:-1][::-1])
+
+        with self.progress_bar(total=windows + temporal_adaptive_step - 1) as progress_bar:
+            self.reference_unet(
+                ref_image_latents,
+                torch.zeros((batch_size,),dtype=torch.float32,device=ref_image_latents.device),
+                encoder_hidden_states=image_prompt_embeds,
+                return_dict=False,
+            )
+            reference_control_reader.update(reference_control_writer)
+            for i in range(windows + temporal_adaptive_step - 1):
+                l = i * temporal_window_size
+                r = (i + 1) * temporal_window_size
+
+                current_driving = tgt_images[l:r]
+                current_face = face_images[l:r]
+
+                tgt_cond_tensor = self.cond_image_processor.preprocess(
+                    current_driving, height=256, width=256
+                ).to(device=device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
+                tgt_cond_tensor = tgt_cond_tensor / 2 + 0.5 # to [0, 1]
+
+                if i == 0:
+                    mot_bbox_param, kps_ref, kps_frame1, _ = self.pose_encoder.interpolate_kps_online(ref_cond_tensor, tgt_cond_tensor, num_interp=padding_num+1)
+                else:
+                    mot_bbox_param, _ = self.pose_encoder.get_kps(kps_ref, kps_frame1, tgt_cond_tensor)
+
+                keypoints = draw_keypoints(mot_bbox_param, device=device)
+                keypoints = rearrange(keypoints.unsqueeze(2), 'f c b h w -> b c f h w')
+                keypoints = keypoints.to(device=device, dtype=self.pose_guider.dtype)
+
+                pose_fea = self.pose_guider(keypoints)
+
+                face_cond_tensor = self.cond_image_processor.preprocess(
+                    current_face, height=224, width=224
+                ).transpose(0, 1)
+                face_cond_tensor = face_cond_tensor.unsqueeze(0) # (1, c, t, h, w) 
+                face_cond_tensor = face_cond_tensor.to(
+                    device=device, dtype=self.motion_encoder.dtype
+                )
+
+                motion_hidden_state = self.motion_encoder(face_cond_tensor)
+
+                if i == 0:
+                    init_motion_hidden_states = self.interpolate_tensors(neg_motion_hidden_states, motion_hidden_state[:,:1], num=padding_num+1)[:,:-1]
+                    motion_hidden_states = torch.cat([init_motion_hidden_states, motion_hidden_state], dim=1)
+                    pose_feas = pose_fea
+
+                else:
+                    motion_hidden_states = torch.cat([motion_hidden_states[:,temporal_window_size:], motion_hidden_state], dim=1)
+                    pose_feas = torch.cat([pose_feas[:,:,temporal_window_size:], pose_fea], dim=2)
+                
+                if l > temporal_adaptive_step * temporal_window_size * 2 and motion_bank.shape[1] < 4:
+                    add_flag, motion_bank = self.calculate_dis(motion_bank, motion_hidden_state, threshold=17.)
+                
+                latents = ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
+                noise = torch.randn_like(latents)
+                latents = self.scheduler.add_noise(latents, noise, timesteps[:1])
+
+                latents = torch.cat([noise_latents, latents], dim=2)
+                latents_model_input = latents
+
+                for j in range(jump):
+                    ut = reversed(timesteps[j::jump]).repeat_interleave(temporal_window_size, dim=0)
+                    ut = torch.stack([ut] * batch_size).to(device)
+                    ut = rearrange(ut, 'b f -> (b f)')
+
+                    noise_pred = self.denoising_unet(
+                        latents_model_input,
+                        ut,
+                        encoder_hidden_states=[
+                            image_prompt_embeds,
+                            motion_hidden_states,
+                        ],
+                        pose_cond_fea=pose_feas,
+                        return_dict=False,
+                    )[0]
+
+                    
+                    clip_length = noise_pred.shape[2]
+                    mid_noise_pred = rearrange(noise_pred, 'b c f h w -> (b f) c h w')
+                    mid_latents = rearrange(latents_model_input, 'b c f h w -> (b f) c h w')
+                    latents_model_input, pred_original_sample = self.scheduler.step(
+                        mid_noise_pred, ut, mid_latents, **extra_step_kwargs, return_dict=False
+                    )
+                    latents_model_input = rearrange(latents_model_input, '(b f) c h w -> b c f h w', f=clip_length)
+                    pred_original_sample = rearrange(pred_original_sample, '(b f) c h w -> b c f h w', f=clip_length)
+
+                noise_latents = latents_model_input[:,:,temporal_window_size:].to(dtype=self.dtype)
+
+                if add_flag:
+                    reference_control_writer.clear()
+                    self.reference_unet(
+                        pred_original_sample[:,:,0].to(self.reference_unet.dtype),
+                        torch.zeros((batch_size,),dtype=torch.float32,device=ref_image_latents.device),
+                        encoder_hidden_states=image_prompt_embeds,
+                        return_dict=False,
+                    )
+                    reference_control_reader.update_hkf(reference_control_writer)
+                
+                if i > temporal_adaptive_step - 2:
+                    video_pile = self.decode_latents(pred_original_sample[:,:,:temporal_window_size].to(dtype=self.dtype))
+                    final_videos.append(video_pile)
+                progress_bar.update()
+
+            reference_control_reader.clear()
+            reference_control_writer.clear()
+
+            images = torch.cat(final_videos, dim=2)
+
+            if output_type != "tensor":
+                images = images.numpy()
+            
+            if not return_dict:
+                return images
+            
+            return Pose2VideoPipelineOutput(videos=images)

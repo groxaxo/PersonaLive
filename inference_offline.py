@@ -16,7 +16,7 @@ from torchvision import transforms
 from transformers import CLIPVisionModelWithProjection
 from src.models.unet_2d_condition import UNet2DConditionModel
 from src.models.unet_3d import UNet3DConditionModel
-from src.pipelines.pipeline_pose2vid import Pose2VideoPipeline
+from src.pipelines.pipeline_pose2vid import Pose2VideoPipeline, Pose2VideoPipeline_Stream
 from src.utils.util import save_videos_grid, crop_face
 from decord import VideoReader
 from diffusers.utils.import_utils import is_xformers_available
@@ -36,6 +36,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--use_xformers", type=bool, default=True)
+    parser.add_argument("--stream_gen", type=bool, default=True, help='use streaming generation strategy to reduce VRAM usage.')
     args = parser.parse_args()
 
     return args
@@ -135,7 +136,12 @@ def main(args):
     mp_face_mesh = mp.solutions.face_mesh
     face_mesh = mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
 
-    pipe = Pose2VideoPipeline(
+    if args.stream_gen:
+        pipeline = Pose2VideoPipeline_Stream
+    else:
+        pipeline = Pose2VideoPipeline
+    
+    pipe = pipeline(
         vae=vae,
         # vae_tiny=vae_tiny,
         image_encoder=image_enc,
