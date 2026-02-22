@@ -17,6 +17,7 @@
 ## 📋 TODO
 - [ ] If you find PersonaLive useful or interesting, please give us a Star🌟! Your support drives us to keep improving.
 - [ ] Fix bugs (If you encounter any issues, please feel free to open an issue or contact me! 🙏)
+- [x] **[2026.02.21]** 🥳 PersonaLive is accepted by CVPR2026 🎉.
 - [x] **[2025.12.29]** 🔥 Enhance WebUI (Support reference image replacement).
 - [x] **[2025.12.22]** 🔥 Supported streaming strategy in offline inference to generate long videos on 12GB VRAM!
 - [x] **[2025.12.17]** 🔥 [ComfyUI-PersonaLive](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
