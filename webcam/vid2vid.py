@@ -1,5 +1,6 @@
 import sys
 import os
+
 sys.path.append(
     os.path.join(
         os.path.dirname(__file__),
@@ -17,6 +18,7 @@ from .config import Args
 from pydantic import BaseModel, Field
 from PIL import Image
 import math
+from collections import deque
 from src.wrapper import PersonaLive
 import queue
 
@@ -64,8 +66,18 @@ class Pipeline:
 
         self.process = Process(
             target=generate_process,
-            args=(self.args, self.prepare_event, self.restart_event, self.stop_event, self.reset_event, self.input_queue, self.output_queue, self.reference_queue, self.device),
-            daemon=True
+            args=(
+                self.args,
+                self.prepare_event,
+                self.restart_event,
+                self.stop_event,
+                self.reset_event,
+                self.input_queue,
+                self.output_queue,
+                self.reference_queue,
+                self.device,
+            ),
+            daemon=True,
         )
         self.process.start()
         self.processes = [self.process]
@@ -77,10 +89,7 @@ class Pipeline:
 
     def accept_new_params(self, params: "Pipeline.InputParams"):
         if hasattr(params, "image"):
-            image_pil = params.image.to(self.device).float() / 255.0
-            image_pil = image_pil * 2. - 1. 
-            image_pil = image_pil.permute(2, 0, 1).unsqueeze(0)
-            self.input_queue.put(image_pil)
+            self.input_queue.put(params.image.contiguous())
 
         if hasattr(params, "restart") and params.restart:
             self.restart_event.set()
@@ -97,7 +106,7 @@ class Pipeline:
                 results.append(array_to_image(data))
         except queue.Empty:
             pass
-            
+
         return results
 
     def close(self):
@@ -116,45 +125,81 @@ class Pipeline:
                     process.kill()
         print("Pipeline closed successfully")
 
+
 def generate_process(
-        args,
-        prepare_event, 
-        restart_event, 
-        stop_event, 
-        reset_event,
-        input_queue, 
-        output_queue, 
-        reference_queue,
-        device): 
+    args,
+    prepare_event,
+    restart_event,
+    stop_event,
+    reset_event,
+    input_queue,
+    output_queue,
+    reference_queue,
+    device,
+):
     torch.set_grad_enabled(False)
     pipeline = PersonaLive(args, device)
     chunk_size = 4
-    
+    profile_latency = os.getenv("PERSONALIVE_PROFILE", "0") == "1"
+    total_ms_window = deque(maxlen=120)
+    preprocess_ms_window = deque(maxlen=120)
+    infer_ms_window = deque(maxlen=120)
+    loop_count = 0
+
     prepare_event.set()
 
     reference_img = reference_queue.get()
     pipeline.fuse_reference(reference_img)
-    print('fuse reference done')
-    
+    print("fuse reference done")
+
     while not stop_event.is_set():
+        loop_start = time.perf_counter()
         if restart_event.is_set():
             clear_queue(input_queue)
             restart_event.clear()
-        print("input_queue size = ", input_queue.qsize())
         images = read_images_from_queue(input_queue, chunk_size, device, reset_event)
         if reset_event.is_set():
             pipeline.reset()
             clear_queue(input_queue)
             clear_queue(reference_queue)
-            print('Waiting for reference image...')
+            print("Waiting for reference image...")
             reference_img = reference_queue.get()
             pipeline.fuse_reference(reference_img)
-            print('Fuse reference image done')
+            print("Fuse reference image done")
             reset_event.clear()
             continue
 
-        images = torch.cat(images, dim=0)
-        
+        preprocess_start = time.perf_counter()
+        images = torch.stack(images, dim=0)
+        images = images.to(device=device, dtype=torch.float32)
+        if images.ndim == 4 and images.shape[-1] == 3:
+            images = images.permute(0, 3, 1, 2)
+        images = images / 255.0
+        images = images * 2.0 - 1.0
+        preprocess_ms = (time.perf_counter() - preprocess_start) * 1000.0
+
+        infer_start = time.perf_counter()
         video = pipeline.process_input(images)
+        infer_ms = (time.perf_counter() - infer_start) * 1000.0
         for image in video:
             output_queue.put(image)
+
+        if profile_latency:
+            loop_count += 1
+            total_ms = (time.perf_counter() - loop_start) * 1000.0
+            total_ms_window.append(total_ms)
+            preprocess_ms_window.append(preprocess_ms)
+            infer_ms_window.append(infer_ms)
+
+            if loop_count % 30 == 0 and len(total_ms_window) >= 10:
+                total_sorted = sorted(total_ms_window)
+                preprocess_sorted = sorted(preprocess_ms_window)
+                infer_sorted = sorted(infer_ms_window)
+                mid_idx = len(total_sorted) // 2
+                p95_idx = int((len(total_sorted) - 1) * 0.95)
+                print(
+                    "[profile] "
+                    f"total_ms p50={total_sorted[mid_idx]:.1f} p95={total_sorted[p95_idx]:.1f} | "
+                    f"pre_ms p50={preprocess_sorted[mid_idx]:.1f} | "
+                    f"infer_ms p50={infer_sorted[mid_idx]:.1f}"
+                )

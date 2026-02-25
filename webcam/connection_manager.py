@@ -17,8 +17,9 @@ class ServerFullException(Exception):
 
 
 class ConnectionManager:
-    def __init__(self):
+    def __init__(self, output_queue_maxsize: int = 120):
         self.active_connections: Connections = {}
+        self.output_queue_maxsize = output_queue_maxsize
 
     async def connect(
         self, user_id: UUID, websocket: WebSocket, max_queue_size: int = 0
@@ -35,7 +36,7 @@ class ConnectionManager:
         self.active_connections[user_id] = {
             "websocket": websocket,
             "queue": asyncio.Queue(),
-            "output_queue": asyncio.Queue(),
+            "output_queue": asyncio.Queue(maxsize=self.output_queue_maxsize),
         }
         await websocket.send_json(
             {"status": "connected", "message": "Connected"},
@@ -102,21 +103,27 @@ class ConnectionManager:
                 await websocket.close()
                 print(f"[ConnectionManager] WebSocket closed for user {user_id}")
         except Exception as e:
-            logging.error(f"Error: Exception while closing websocket for {user_id}: {e}")
+            logging.error(
+                f"Error: Exception while closing websocket for {user_id}: {e}"
+            )
         finally:
             try:
                 self.delete_user(user_id)
                 print(f"[ConnectionManager] User {user_id} removed from connections")
             except Exception as e:
-                logging.error(f"Error: Exception while clearing data for {user_id}: {e}")
+                logging.error(
+                    f"Error: Exception while clearing data for {user_id}: {e}"
+                )
 
     async def disconnect_all(self, pipeline: Pipeline = None):
         """Disconnect all users and close pipeline"""
-        print(f"[ConnectionManager] Disconnecting all {len(self.active_connections)} users...")
+        print(
+            f"[ConnectionManager] Disconnecting all {len(self.active_connections)} users..."
+        )
         user_ids = list(self.active_connections.keys())
         for user_id in user_ids:
             await self.disconnect(user_id, pipeline)
-        
+
         if pipeline:
             try:
                 pipeline.close()

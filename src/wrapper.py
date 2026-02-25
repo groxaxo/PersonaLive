@@ -23,14 +23,24 @@ from einops import rearrange
 from src.utils.util import draw_keypoints, get_boxes
 import torch.nn.functional as F
 
+
 def map_device(device_or_str):
-    return device_or_str if isinstance(device_or_str, torch.device) else torch.device(device_or_str)
+    return (
+        device_or_str
+        if isinstance(device_or_str, torch.device)
+        else torch.device(device_or_str)
+    )
+
 
 class PersonaLive:
     def __init__(self, args, device=None):
         cfg = OmegaConf.load(args.config_path)
-        if(device is None):
-            self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        if device is None:
+            self.device = (
+                torch.device("cuda")
+                if torch.cuda.is_available()
+                else torch.device("cpu")
+            )
         else:
             self.device = map_device(device)
 
@@ -45,9 +55,7 @@ class PersonaLive:
             self.dtype = torch.float32
 
         infer_config = OmegaConf.load(cfg.inference_config)
-        sched_kwargs = OmegaConf.to_container(
-            infer_config.noise_scheduler_kwargs
-        )
+        sched_kwargs = OmegaConf.to_container(infer_config.noise_scheduler_kwargs)
 
         self.num_inference_steps = cfg.num_inference_steps
 
@@ -57,12 +65,18 @@ class PersonaLive:
         self.pose_guider.load_state_dict(pose_guider_state_dict)
         del pose_guider_state_dict
 
-        self.motion_encoder = MotEncoder().to(dtype=self.dtype, device=self.device).eval()
-        motion_encoder_state_dict = torch.load(cfg.motion_encoder_path, map_location="cpu")
+        self.motion_encoder = (
+            MotEncoder().to(dtype=self.dtype, device=self.device).eval()
+        )
+        motion_encoder_state_dict = torch.load(
+            cfg.motion_encoder_path, map_location="cpu"
+        )
         self.motion_encoder.load_state_dict(motion_encoder_state_dict)
         del motion_encoder_state_dict
 
-        self.pose_encoder = MotionExtractor(num_kp=21).to(device=self.device, dtype=self.dtype).eval()
+        self.pose_encoder = (
+            MotionExtractor(num_kp=21).to(device=self.device, dtype=self.dtype).eval()
+        )
         pose_encoder_state_dict = torch.load(cfg.pose_encoder_path, map_location="cpu")
         self.pose_encoder.load_state_dict(pose_encoder_state_dict, strict=False)
         del pose_encoder_state_dict
@@ -78,7 +92,9 @@ class PersonaLive:
             cfg.pretrained_base_model_path,
             subfolder="unet",
         ).to(dtype=self.dtype, device=self.device)
-        reference_unet_state_dict = torch.load(cfg.reference_unet_weight_path, map_location="cpu")
+        reference_unet_state_dict = torch.load(
+            cfg.reference_unet_weight_path, map_location="cpu"
+        )
         self.reference_unet.load_state_dict(reference_unet_state_dict)
         del reference_unet_state_dict
 
@@ -120,7 +136,7 @@ class PersonaLive:
         self.scheduler = DDIMScheduler(**sched_kwargs)
         self.timesteps = torch.tensor([999, 666, 333, 0], device=self.device).long()
         self.scheduler.set_step_length(333)
-        
+
         self.generator = torch.Generator(self.device)
         self.generator.manual_seed(cfg.seed)
 
@@ -131,8 +147,11 @@ class PersonaLive:
         )
         self.clip_image_processor = CLIPImageProcessor()
         self.cond_image_processor = VaeImageProcessor(
-            vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=True)
-        
+            vae_scale_factor=self.vae_scale_factor,
+            do_convert_rgb=True,
+            do_normalize=True,
+        )
+
         self.cfg = cfg
         self.reset()
         torch.cuda.empty_cache()
@@ -141,7 +160,7 @@ class PersonaLive:
             self.enable_xformers_memory_efficient_attention()
         except Exception as e:
             print("Failed to enable xformers:", e)
-    
+
     def reset(self):
         self.first_frame = True
         self.motion_bank = None
@@ -167,12 +186,14 @@ class PersonaLive:
         return tgt_cond_tensor
 
     @torch.no_grad()
-    def fuse_reference(self, ref_image): # pil input
+    def fuse_reference(self, ref_image):  # pil input
         clip_image = self.clip_image_processor.preprocess(
             ref_image, return_tensors="pt"
         ).pixel_values
         ref_image_tensor = self.ref_image_processor.preprocess(
-            ref_image, height=self.cfg.reference_image_height, width=self.cfg.reference_image_width
+            ref_image,
+            height=self.cfg.reference_image_height,
+            width=self.cfg.reference_image_width,
         )  # (bs, c, width, height)
         clip_image_embeds = self.image_encoder(
             clip_image.to(self.image_encoder.device, dtype=self.image_encoder.dtype)
@@ -186,7 +207,9 @@ class PersonaLive:
         ref_image_latents = ref_image_latents * 0.18215  # (b, 4, h, w)
         self.reference_unet(
             ref_image_latents.to(self.reference_unet.device),
-            torch.zeros((self.batch_size,),dtype=self.dtype,device=self.reference_unet.device),
+            torch.zeros(
+                (self.batch_size,), dtype=self.dtype, device=self.reference_unet.device
+            ),
             encoder_hidden_states=self.encoder_hidden_states,
             return_dict=False,
         )
@@ -196,19 +219,23 @@ class PersonaLive:
         ref_cond_tensor = self.cond_image_processor.preprocess(
             ref_image, height=256, width=256
         ).to(device=self.device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
-        self.ref_cond_tensor = ref_cond_tensor / 2 + 0.5 # to [0, 1]
+        self.ref_cond_tensor = ref_cond_tensor / 2 + 0.5  # to [0, 1]
         self.ref_image_latents = ref_image_latents
 
         padding_num = (self.temporal_adaptive_step - 1) * self.temporal_window_size
         init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
         noise = torch.randn_like(init_latents)
-        init_timesteps = reversed(self.timesteps).repeat_interleave(self.temporal_window_size, dim=0)
-        noisy_latents_first = self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
-        for i in range(self.temporal_adaptive_step-1):
+        init_timesteps = reversed(self.timesteps).repeat_interleave(
+            self.temporal_window_size, dim=0
+        )
+        noisy_latents_first = self.scheduler.add_noise(
+            init_latents, noise, init_timesteps[:padding_num]
+        )
+        for i in range(self.temporal_adaptive_step - 1):
             l = i * self.temporal_window_size
-            r = (i+1) * self.temporal_window_size
-            self.latents_pile.append(noisy_latents_first[:,:,l:r])
-    
+            r = (i + 1) * self.temporal_window_size
+            self.latents_pile.append(noisy_latents_first[:, :, l:r])
+
     def crop_face(self, image_pil, boxes):
         image = np.array(image_pil)
 
@@ -217,7 +244,7 @@ class PersonaLive:
         face_patch = image[int(top) : int(bot), int(left) : int(right)]
         face_patch = Image.fromarray(face_patch).convert("RGB")
         return face_patch
-    
+
     def crop_face_tensor(self, image_tensor, boxes):
         left, top, right, bot = boxes
         left, top, right, bottom = map(int, (left, top, right, bot))
@@ -230,8 +257,10 @@ class PersonaLive:
             align_corners=False,
         )
         return face_patch
-    
-    def interpolate_tensors(self, a: torch.Tensor, b: torch.Tensor, num: int = 10) -> torch.Tensor:
+
+    def interpolate_tensors(
+        self, a: torch.Tensor, b: torch.Tensor, num: int = 10
+    ) -> torch.Tensor:
         """
         在张量 a 和 b 之间线性插值。
         输入 shape: (B, 1, D1, D2, ...)
@@ -249,8 +278,8 @@ class PersonaLive:
         # 插值 (B, num, D1, D2, ...)
         result = (1 - alphas) * a + alphas * b
         return result
-    
-    def calculate_dis(self, A, B, threshold=10.):
+
+    def calculate_dis(self, A, B, threshold=10.0):
         """
         A: (b, f1, c1, c2)  bank
         B: (b, f2, c1, c2)  new data
@@ -263,7 +292,9 @@ class PersonaLive:
 
         min_dist, min_idx = dist.min(dim=1)  # (f2,)
 
-        idx_to_add = torch.nonzero(min_dist[:1] > threshold, as_tuple=False).squeeze(1).tolist()
+        idx_to_add = (
+            torch.nonzero(min_dist[:1] > threshold, as_tuple=False).squeeze(1).tolist()
+        )
 
         if len(idx_to_add) > 0:  # 有需要添加的元素
             B_to_add = B[:, idx_to_add]  # (1, k, c1, c2)
@@ -284,15 +315,21 @@ class PersonaLive:
         tgt_cond_tensor = tgt_cond_tensor / 2 + 0.5
 
         if self.first_frame:
-            mot_bbox_param, kps_ref, kps_frame1, kps_dri = self.pose_encoder.interpolate_kps_online(self.ref_cond_tensor, tgt_cond_tensor, num_interp=12+1)
+            mot_bbox_param, kps_ref, kps_frame1, kps_dri = (
+                self.pose_encoder.interpolate_kps_online(
+                    self.ref_cond_tensor, tgt_cond_tensor, num_interp=12 + 1
+                )
+            )
             self.kps_ref = kps_ref
             self.kps_frame1 = kps_frame1
         else:
-            mot_bbox_param, kps_dri = self.pose_encoder.get_kps(self.kps_ref, self.kps_frame1, tgt_cond_tensor)
+            mot_bbox_param, kps_dri = self.pose_encoder.get_kps(
+                self.kps_ref, self.kps_frame1, tgt_cond_tensor
+            )
 
         keypoints = draw_keypoints(mot_bbox_param, device=device)
         boxes = get_boxes(kps_dri)
-        keypoints = rearrange(keypoints.unsqueeze(2), 'f c b h w -> b c f h w')
+        keypoints = rearrange(keypoints.unsqueeze(2), "f c b h w -> b c f h w")
         keypoints = keypoints.to(device=device, dtype=self.pose_guider.dtype)
 
         if self.first_frame:
@@ -310,11 +347,13 @@ class PersonaLive:
             ref_motion = motion_hidden_states[:, :1]
             dri_motion = motion_hidden_states[:, 1:]
 
-            init_motion_hidden_states = self.interpolate_tensors(ref_motion, dri_motion[:,:1], num=12+1)[:,:-1]
-            for i in range(temporal_adaptive_step-1):
+            init_motion_hidden_states = self.interpolate_tensors(
+                ref_motion, dri_motion[:, :1], num=12 + 1
+            )[:, :-1]
+            for i in range(temporal_adaptive_step - 1):
                 l = i * temporal_window_size
-                r = (i+1) * temporal_window_size
-                self.motion_pile.append(init_motion_hidden_states[:,l:r])
+                r = (i + 1) * temporal_window_size
+                self.motion_pile.append(init_motion_hidden_states[:, l:r])
             self.motion_pile.append(dri_motion)
 
             self.motion_bank = ref_motion
@@ -331,76 +370,101 @@ class PersonaLive:
         if self.first_frame:
             for i in range(temporal_adaptive_step):
                 l = i * temporal_window_size
-                r = (i+1) * temporal_window_size
-                self.pose_pile.append(pose_fea[:,:,l:r])
+                r = (i + 1) * temporal_window_size
+                self.pose_pile.append(pose_fea[:, :, l:r])
             self.first_frame = False
         else:
             self.pose_pile.append(pose_fea)
 
-        latents = self.ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
+        latents = self.ref_image_latents.unsqueeze(2).repeat(
+            1, 1, temporal_window_size, 1, 1
+        )
         noise = torch.randn_like(latents)
         latents = self.scheduler.add_noise(latents, noise, self.timesteps[:1])
         self.latents_pile.append(latents)
 
         jump = 1
         motion_hidden_state = torch.cat(list(self.motion_pile), dim=1)
-        pose_cond_fea=torch.cat(list(self.pose_pile), dim=2)
+        pose_cond_fea = torch.cat(list(self.pose_pile), dim=2)
 
         idx_to_add = []
         if self.count > 8:
-            idx_to_add, self.motion_bank, idx_his = self.calculate_dis(self.motion_bank, motion_hidden_state, threshold=17.)
+            idx_to_add, self.motion_bank, idx_his = self.calculate_dis(
+                self.motion_bank, motion_hidden_state, threshold=17.0
+            )
 
         latents_model_input = torch.cat(list(self.latents_pile), dim=2)
         for j in range(jump):
-            timesteps = reversed(self.timesteps[j::jump]).repeat_interleave(temporal_window_size, dim=0)
-            timesteps = torch.stack([timesteps] * batch_size)#.to(device)
-            timesteps = rearrange(timesteps, 'b f -> (b f)')
+            timesteps = reversed(self.timesteps[j::jump]).repeat_interleave(
+                temporal_window_size, dim=0
+            )
+            timesteps = torch.stack([timesteps] * batch_size)  # .to(device)
+            timesteps = rearrange(timesteps, "b f -> (b f)")
             noise_pred = self.denoising_unet(
                 latents_model_input,
                 timesteps,
-                encoder_hidden_states=[self.encoder_hidden_states,
-                                       motion_hidden_state],
+                encoder_hidden_states=[self.encoder_hidden_states, motion_hidden_state],
                 pose_cond_fea=pose_cond_fea,
                 return_dict=False,
             )[0]
 
             clip_length = noise_pred.shape[2]
-            mid_noise_pred = rearrange(noise_pred, 'b c f h w -> (b f) c h w')
-            mid_latents = rearrange(latents_model_input, 'b c f h w -> (b f) c h w')
+            mid_noise_pred = rearrange(noise_pred, "b c f h w -> (b f) c h w")
+            mid_latents = rearrange(latents_model_input, "b c f h w -> (b f) c h w")
             latents_model_input, pred_original_sample = self.scheduler.step(
-                mid_noise_pred, timesteps, mid_latents, generator=self.generator, return_dict=False
+                mid_noise_pred,
+                timesteps,
+                mid_latents,
+                generator=self.generator,
+                return_dict=False,
             )
-            latents_model_input = rearrange(latents_model_input, '(b f) c h w -> b c f h w', f=clip_length)
-            pred_original_sample = rearrange(pred_original_sample, '(b f) c h w -> b c f h w', f=clip_length)
-            latents_model_input = torch.cat([
-                pred_original_sample[:,:,:temporal_window_size],
-                latents_model_input[:,:,temporal_window_size:]], dim=2)
+            latents_model_input = rearrange(
+                latents_model_input, "(b f) c h w -> b c f h w", f=clip_length
+            )
+            pred_original_sample = rearrange(
+                pred_original_sample, "(b f) c h w -> b c f h w", f=clip_length
+            )
+            latents_model_input = torch.cat(
+                [
+                    pred_original_sample[:, :, :temporal_window_size],
+                    latents_model_input[:, :, temporal_window_size:],
+                ],
+                dim=2,
+            )
             latents_model_input = latents_model_input.to(dtype=self.dtype)
 
         if len(idx_to_add) > 0 and self.num_khf < 3:
             self.reference_control_writer.clear()
             self.reference_unet(
-                pred_original_sample[:,:,0].to(self.reference_unet.dtype),
-                torch.zeros((batch_size,),dtype=self.dtype,device=self.reference_unet.device),
+                pred_original_sample[:, :, 0].to(self.reference_unet.dtype),
+                torch.zeros(
+                    (batch_size,), dtype=self.dtype, device=self.reference_unet.device
+                ),
                 encoder_hidden_states=self.encoder_hidden_states,
                 return_dict=False,
             )
             self.reference_control_reader.update_hkf(self.reference_control_writer)
-            print('add_keyframes')
+            print("add_keyframes")
             self.num_khf += 1
-        
-        
+
         for i in range(len(self.latents_pile)):
-            self.latents_pile[i] = latents_model_input[:, :, i * temporal_adaptive_step : (i + 1) * temporal_adaptive_step, :, :]
+            self.latents_pile[i] = latents_model_input[
+                :,
+                :,
+                i * temporal_adaptive_step : (i + 1) * temporal_adaptive_step,
+                :,
+                :,
+            ]
 
         self.pose_pile.popleft()
         self.motion_pile.popleft()
         latents = self.latents_pile.popleft()
-        latents = 1 / 0.18215 * latents
+        vae_scaling = getattr(self.vae.config, "scaling_factor", 0.18215)
+        latents = latents / vae_scaling
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = self.vae.decode(latents).sample
         video = rearrange(video, "b c h w -> b h w c")
         video = (video / 2 + 0.5).clamp(0, 1)
-        video = video.cpu().numpy()
+        video = video.to(device="cpu", non_blocking=True).numpy()
         self.count += 1
         return video

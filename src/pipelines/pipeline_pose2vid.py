@@ -30,6 +30,7 @@ from src.pipelines.utils import get_tensor_interpolation_method
 from src.models.mutual_self_attention import ReferenceAttentionControl
 from src.utils.util import draw_keypoints
 
+
 @dataclass
 class Pose2VideoPipelineOutput(BaseOutput):
     videos: Union[torch.Tensor, np.ndarray]
@@ -111,13 +112,17 @@ class Pose2VideoPipeline(DiffusionPipeline):
             ):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
-    
+
     def decode_latents_tiny(self, latents, decode_chunk_size=64):
         video_length = latents.shape[2]
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
         for frame_idx in tqdm(range(0, latents.shape[0], decode_chunk_size)):
-            video.append(self.vae_tiny.decode(latents[frame_idx : frame_idx + decode_chunk_size]).sample)
+            video.append(
+                self.vae_tiny.decode(
+                    latents[frame_idx : frame_idx + decode_chunk_size]
+                ).sample
+            )
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
@@ -127,16 +132,21 @@ class Pose2VideoPipeline(DiffusionPipeline):
 
     def decode_latents(self, latents, decode_chunk_size=16):
         video_length = latents.shape[2]
-        latents = 1 / 0.18215 * latents
+        vae_scaling = getattr(self.vae.config, "scaling_factor", 0.18215)
+        latents = latents / vae_scaling
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
         for frame_idx in range(0, latents.shape[0], decode_chunk_size):
-            video.append(self.vae.decode(latents[frame_idx : frame_idx + decode_chunk_size]).sample)
+            video.append(
+                self.vae.decode(
+                    latents[frame_idx : frame_idx + decode_chunk_size]
+                ).sample
+            )
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
-        video = video.cpu().float().numpy()
+        video = video.to(dtype=torch.float32, device="cpu", non_blocking=True).numpy()
         return video
 
     def decode_latents_svd(
@@ -341,8 +351,12 @@ class Pose2VideoPipeline(DiffusionPipeline):
         video_length = init_latents.shape[2]
         init_latents = rearrange(init_latents, "b c f h w -> (b f) c h w")
         init_latents_blur = blur(init_latents)
-        init_latents = rearrange(init_latents, "(b f) c h w -> b c f h w", f=video_length)
-        init_latents_blur = rearrange(init_latents_blur, "(b f) c h w -> b c f h w", f=video_length)
+        init_latents = rearrange(
+            init_latents, "(b f) c h w -> b c f h w", f=video_length
+        )
+        init_latents_blur = rearrange(
+            init_latents_blur, "(b f) c h w -> b c f h w", f=video_length
+        )
         # init_latents = init_latents * mask + init_latents_blur * (1 - mask)
         # init_latents[:, :, 0:1, :, :] = first_frame_latents
 
@@ -393,7 +407,9 @@ class Pose2VideoPipeline(DiffusionPipeline):
 
         return new_latents
 
-    def interpolate_tensors(self, a: torch.Tensor, b: torch.Tensor, num: int = 10) -> torch.Tensor:
+    def interpolate_tensors(
+        self, a: torch.Tensor, b: torch.Tensor, num: int = 10
+    ) -> torch.Tensor:
         """
         Linear interpolation between tensors a and b.
         input shape: (B, 1, D1, D2, ...)
@@ -410,8 +426,8 @@ class Pose2VideoPipeline(DiffusionPipeline):
         # (B, num, D1, D2, ...)
         result = (1 - alphas) * a + alphas * b
         return result
-    
-    def calculate_dis(self, A, B, threshold=10.):
+
+    def calculate_dis(self, A, B, threshold=10.0):
         """
         A: (b, f1, c1, c2)  bank
         B: (b, f2, c1, c2)  new data
@@ -424,7 +440,9 @@ class Pose2VideoPipeline(DiffusionPipeline):
 
         min_dist, min_idx = dist.min(dim=1)  # (f2,)
 
-        idx_to_add = torch.nonzero(min_dist[:1] > threshold, as_tuple=False).squeeze(1).tolist()
+        idx_to_add = (
+            torch.nonzero(min_dist[:1] > threshold, as_tuple=False).squeeze(1).tolist()
+        )
 
         if len(idx_to_add) > 0:
             B_to_add = B[:, idx_to_add]  # (1, k, c1, c2)
@@ -452,14 +470,18 @@ class Pose2VideoPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         output_type: Optional[str] = "tensor",
         return_dict: bool = True,
-        temporal_window_size = 4,
-        temporal_adaptive_step = 4,
+        temporal_window_size=4,
+        temporal_adaptive_step=4,
         temporal_kv_cache=True,
         init_latents=None,
         **kwargs,
     ):
-        assert num_inference_steps % temporal_adaptive_step == 0, "temporal_adaptive_step should be divisor of num_inference_steps"
-        assert video_length % temporal_window_size == 0, "temporal_window_size should be divisor of video_length"
+        assert num_inference_steps % temporal_adaptive_step == 0, (
+            "temporal_adaptive_step should be divisor of num_inference_steps"
+        )
+        assert video_length % temporal_window_size == 0, (
+            "temporal_window_size should be divisor of video_length"
+        )
         # Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -525,34 +547,44 @@ class Pose2VideoPipeline(DiffusionPipeline):
         padding_num = (temporal_adaptive_step - 1) * temporal_window_size
         noisy_latents_first = []
         init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
-        init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(temporal_window_size, dim=0)
+        init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(
+            temporal_window_size, dim=0
+        )
         noise = torch.randn_like(init_latents)
-        noisy_latents_first.append(self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num]))
-        
-        repeated_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, video_length+padding_num, 1, 1)
+        noisy_latents_first.append(
+            self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
+        )
+
+        repeated_latents = ref_image_latents.unsqueeze(2).repeat(
+            1, 1, video_length + padding_num, 1, 1
+        )
         noise = torch.randn_like(repeated_latents)
-        noisy_latents_first.append(self.scheduler.add_noise(repeated_latents, noise, timesteps[:1]))
+        noisy_latents_first.append(
+            self.scheduler.add_noise(repeated_latents, noise, timesteps[:1])
+        )
         latents = torch.cat(noisy_latents_first, dim=2)
 
         # 3D implicit keypoints
         ref_cond_tensor = self.cond_image_processor.preprocess(
             ref_image, height=256, width=256
         ).to(device=device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
-        ref_cond_tensor = ref_cond_tensor / 2 + 0.5 # to [0, 1]
+        ref_cond_tensor = ref_cond_tensor / 2 + 0.5  # to [0, 1]
 
         tgt_cond_tensor = self.cond_image_processor.preprocess(
             tgt_images, height=256, width=256
         ).to(device=device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
-        tgt_cond_tensor = tgt_cond_tensor / 2 + 0.5 # to [0, 1]
-        
-        mot_bbox_param = self.pose_encoder.interpolate_kps(ref_cond_tensor, tgt_cond_tensor, num_interp=padding_num+1)  # (t, c)
+        tgt_cond_tensor = tgt_cond_tensor / 2 + 0.5  # to [0, 1]
+
+        mot_bbox_param = self.pose_encoder.interpolate_kps(
+            ref_cond_tensor, tgt_cond_tensor, num_interp=padding_num + 1
+        )  # (t, c)
         keypoints = draw_keypoints(mot_bbox_param, device=device).unsqueeze(2)
-        keypoints = rearrange(keypoints, 'f c b h w -> b c f h w')
+        keypoints = rearrange(keypoints, "f c b h w -> b c f h w")
         keypoints = keypoints.to(device=device, dtype=self.pose_guider.dtype)
-        
+
         pose_feas = []
         for i in range(0, keypoints.shape[2], 256):
-            pose_fea = self.pose_guider(keypoints[:,:, i:i+256, :, :])  # (b, c, f)
+            pose_fea = self.pose_guider(keypoints[:, :, i : i + 256, :, :])  # (b, c, f)
             pose_feas.append(pose_fea)
         pose_feas = torch.cat(pose_feas, dim=2)
 
@@ -560,39 +592,62 @@ class Pose2VideoPipeline(DiffusionPipeline):
         face_cond_tensor = self.cond_image_processor.preprocess(
             face_images, height=224, width=224
         ).transpose(0, 1)
-        face_cond_tensor = face_cond_tensor.unsqueeze(0) # (1, c, t, h, w)
+        face_cond_tensor = face_cond_tensor.unsqueeze(0)  # (1, c, t, h, w)
         face_cond_tensor = face_cond_tensor.to(
             device=device, dtype=self.motion_encoder.dtype
         )
-        
+
         motion_hidden_states = []
         for i in range(0, face_cond_tensor.shape[2], 256):
-            motion_hidden_state = self.motion_encoder(face_cond_tensor[:,:, i:i+256, :, :])  # [b, c]
+            motion_hidden_state = self.motion_encoder(
+                face_cond_tensor[:, :, i : i + 256, :, :]
+            )  # [b, c]
             motion_hidden_states.append(motion_hidden_state)
         motion_hidden_states = torch.cat(motion_hidden_states, dim=1)  # [b, f, c]
 
         ref_face_cond_tensor = self.cond_image_processor.preprocess(
             ref_face_image, height=224, width=224
         ).to(device=device, dtype=self.motion_encoder.dtype)
-        neg_motion_hidden_states = self.motion_encoder(ref_face_cond_tensor.unsqueeze(2))    # [b, c]
+        neg_motion_hidden_states = self.motion_encoder(
+            ref_face_cond_tensor.unsqueeze(2)
+        )  # [b, c]
 
         if do_classifier_free_guidance:
             ref_motion_emb = mot_bbox_param[:1]
             ref_keypoints = draw_keypoints(ref_motion_emb).unsqueeze(2)
-            ref_keypoints = ref_keypoints.to(device=device, dtype=self.pose_guider.dtype)
+            ref_keypoints = ref_keypoints.to(
+                device=device, dtype=self.pose_guider.dtype
+            )
             ref_pose_fea = self.pose_guider(ref_keypoints)
-        
-        init_motion_hidden_states = self.interpolate_tensors(neg_motion_hidden_states, motion_hidden_states[:,:1], num=padding_num+1)[:,:-1]
-        motion_hidden_states = torch.cat([init_motion_hidden_states, motion_hidden_states, motion_hidden_states[:,-1:].repeat(1, padding_num, 1, 1)], dim=1)
-        pose_feas = torch.cat([pose_feas, pose_feas[:,:,-1:].repeat(1,1,padding_num,1,1)], dim=2)
+
+        init_motion_hidden_states = self.interpolate_tensors(
+            neg_motion_hidden_states, motion_hidden_states[:, :1], num=padding_num + 1
+        )[:, :-1]
+        motion_hidden_states = torch.cat(
+            [
+                init_motion_hidden_states,
+                motion_hidden_states,
+                motion_hidden_states[:, -1:].repeat(1, padding_num, 1, 1),
+            ],
+            dim=1,
+        )
+        pose_feas = torch.cat(
+            [pose_feas, pose_feas[:, :, -1:].repeat(1, 1, padding_num, 1, 1)], dim=2
+        )
 
         motion_bank = neg_motion_hidden_states
 
         # denoising loop
-        with self.progress_bar(total=windows + temporal_adaptive_step - 1) as progress_bar:
+        with self.progress_bar(
+            total=windows + temporal_adaptive_step - 1
+        ) as progress_bar:
             self.reference_unet(
-                ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
-                torch.zeros((batch_size,),dtype=torch.float32,device=ref_image_latents.device),
+                ref_image_latents.repeat(
+                    (2 if do_classifier_free_guidance else 1), 1, 1, 1
+                ),
+                torch.zeros(
+                    (batch_size,), dtype=torch.float32, device=ref_image_latents.device
+                ),
                 encoder_hidden_states=image_prompt_embeds,
                 return_dict=False,
             )
@@ -606,13 +661,20 @@ class Pose2VideoPipeline(DiffusionPipeline):
                 pose_fea = pose_feas[:, :, l:r]
 
                 add_flag = False
-                if l > temporal_adaptive_step * temporal_window_size * 2 and motion_bank.shape[1] < 4:
-                    add_flag, motion_bank = self.calculate_dis(motion_bank, motion_hidden_state, threshold=17.)
-                
+                if (
+                    l > temporal_adaptive_step * temporal_window_size * 2
+                    and motion_bank.shape[1] < 4
+                ):
+                    add_flag, motion_bank = self.calculate_dis(
+                        motion_bank, motion_hidden_state, threshold=17.0
+                    )
+
                 if do_classifier_free_guidance:
                     motion_hidden_state = torch.cat(
                         [
-                            neg_motion_hidden_states.unsqueeze(1).expand_as(motion_hidden_state),
+                            neg_motion_hidden_states.unsqueeze(1).expand_as(
+                                motion_hidden_state
+                            ),
                             motion_hidden_state,
                         ],
                         dim=0,
@@ -627,11 +689,19 @@ class Pose2VideoPipeline(DiffusionPipeline):
                     )
 
                 for j in range(jump):
-                    latent = latents[:,:,l:r,:,:]
-                    latent_model_input = (torch.cat([latent] * 2) if do_classifier_free_guidance else latent)
-                    ut = reversed(timesteps[j::jump]).repeat_interleave(temporal_window_size, dim=0)
-                    ut = torch.stack([ut] * batch_size * (2 if do_classifier_free_guidance else 1)).to(device)
-                    ut = rearrange(ut, 'b f -> (b f)')
+                    latent = latents[:, :, l:r, :, :]
+                    latent_model_input = (
+                        torch.cat([latent] * 2)
+                        if do_classifier_free_guidance
+                        else latent
+                    )
+                    ut = reversed(timesteps[j::jump]).repeat_interleave(
+                        temporal_window_size, dim=0
+                    )
+                    ut = torch.stack(
+                        [ut] * batch_size * (2 if do_classifier_free_guidance else 1)
+                    ).to(device)
+                    ut = rearrange(ut, "b f -> (b f)")
 
                     noise_pred = self.denoising_unet(
                         latent_model_input,
@@ -651,37 +721,55 @@ class Pose2VideoPipeline(DiffusionPipeline):
                         )
 
                     clip_length = noise_pred.shape[2]
-                    mid_noise_pred = rearrange(noise_pred, 'b c f h w -> (b f) c h w')
-                    mid_latents = rearrange(latents[:,:,l:r,:,:], 'b c f h w -> (b f) c h w')
+                    mid_noise_pred = rearrange(noise_pred, "b c f h w -> (b f) c h w")
+                    mid_latents = rearrange(
+                        latents[:, :, l:r, :, :], "b c f h w -> (b f) c h w"
+                    )
                     ts = ut.chunk(2)[0] if do_classifier_free_guidance else ut
                     mid_latents, pred_original_sample = self.scheduler.step(
-                        mid_noise_pred, ts, mid_latents, **extra_step_kwargs, return_dict=False
+                        mid_noise_pred,
+                        ts,
+                        mid_latents,
+                        **extra_step_kwargs,
+                        return_dict=False,
                     )
-                    mid_latents = rearrange(mid_latents, '(b f) c h w -> b c f h w', f=clip_length)
-                    pred_original_sample = rearrange(pred_original_sample, '(b f) c h w -> b c f h w', f=clip_length)
-                    mid_latents = torch.cat([
-                        pred_original_sample[:,:,:temporal_window_size],
-                        mid_latents[:,:,temporal_window_size:]], dim=2)
-                    latents[:,:,l:r,:,:] = mid_latents
-                
+                    mid_latents = rearrange(
+                        mid_latents, "(b f) c h w -> b c f h w", f=clip_length
+                    )
+                    pred_original_sample = rearrange(
+                        pred_original_sample, "(b f) c h w -> b c f h w", f=clip_length
+                    )
+                    mid_latents = torch.cat(
+                        [
+                            pred_original_sample[:, :, :temporal_window_size],
+                            mid_latents[:, :, temporal_window_size:],
+                        ],
+                        dim=2,
+                    )
+                    latents[:, :, l:r, :, :] = mid_latents
+
                 # history keyframe mechanism
                 if add_flag:
                     reference_control_writer.clear()
                     self.reference_unet(
-                        pred_original_sample[:,:,0].repeat(
-                            (2 if do_classifier_free_guidance else 1), 1, 1, 1
-                        ).to(self.reference_unet.dtype),
-                        torch.zeros((batch_size,),dtype=torch.float32,device=ref_image_latents.device),
+                        pred_original_sample[:, :, 0]
+                        .repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1)
+                        .to(self.reference_unet.dtype),
+                        torch.zeros(
+                            (batch_size,),
+                            dtype=torch.float32,
+                            device=ref_image_latents.device,
+                        ),
                         encoder_hidden_states=image_prompt_embeds,
                         return_dict=False,
                     )
                     reference_control_reader.update_hkf(reference_control_writer)
-                
+
                 progress_bar.update()
             reference_control_reader.clear()
             reference_control_writer.clear()
 
-        latents = latents[:, :, padding_num:video_length+padding_num, :, :]
+        latents = latents[:, :, padding_num : video_length + padding_num, :, :]
         # Post-processing
         if isinstance(self.vae, AutoencoderKL):
             # images = self.decode_latents_tiny(latents)  # (b, c, f, h, w)
@@ -697,6 +785,7 @@ class Pose2VideoPipeline(DiffusionPipeline):
             return images
 
         return Pose2VideoPipelineOutput(videos=images)
+
 
 class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
     def __init__(
@@ -732,16 +821,21 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
 
     def decode_latents(self, latents, decode_chunk_size=16):
         video_length = latents.shape[2]
-        latents = 1 / 0.18215 * latents
+        vae_scaling = getattr(self.vae.config, "scaling_factor", 0.18215)
+        latents = latents / vae_scaling
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         video = []
         for frame_idx in range(0, latents.shape[0], decode_chunk_size):
-            video.append(self.vae.decode(latents[frame_idx : frame_idx + decode_chunk_size]).sample)
+            video.append(
+                self.vae.decode(
+                    latents[frame_idx : frame_idx + decode_chunk_size]
+                ).sample
+            )
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
-        video = video.cpu().float()
+        video = video.to(dtype=torch.float32, device="cpu", non_blocking=True)
         return video
 
     @torch.no_grad()
@@ -760,14 +854,18 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         output_type: Optional[str] = "tensor",
         return_dict: bool = True,
-        temporal_window_size = 4,
-        temporal_adaptive_step = 4,
+        temporal_window_size=4,
+        temporal_adaptive_step=4,
         temporal_kv_cache=True,
         init_latents=None,
         **kwargs,
     ):
-        assert num_inference_steps % temporal_adaptive_step == 0, "temporal_adaptive_step should be divisor of num_inference_steps"
-        assert video_length % temporal_window_size == 0, "temporal_window_size should be divisor of video_length"
+        assert num_inference_steps % temporal_adaptive_step == 0, (
+            "temporal_adaptive_step should be divisor of num_inference_steps"
+        )
+        assert video_length % temporal_window_size == 0, (
+            "temporal_window_size should be divisor of video_length"
+        )
         # Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -823,32 +921,42 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
         ref_cond_tensor = self.cond_image_processor.preprocess(
             ref_image, height=256, width=256
         ).to(device=device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
-        ref_cond_tensor = ref_cond_tensor / 2 + 0.5 # to [0, 1]
+        ref_cond_tensor = ref_cond_tensor / 2 + 0.5  # to [0, 1]
 
         ref_face_cond_tensor = self.cond_image_processor.preprocess(
             ref_face_image, height=224, width=224
         ).to(device=device, dtype=self.motion_encoder.dtype)
-        neg_motion_hidden_states = self.motion_encoder(ref_face_cond_tensor.unsqueeze(2))    # [b, c]
+        neg_motion_hidden_states = self.motion_encoder(
+            ref_face_cond_tensor.unsqueeze(2)
+        )  # [b, c]
 
         # initialize latents [1,4,12,64,64]
         padding_num = (temporal_adaptive_step - 1) * temporal_window_size
         init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
-        init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(temporal_window_size, dim=0)
+        init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(
+            temporal_window_size, dim=0
+        )
         noise = torch.randn_like(init_latents)
-        noise_latents = self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
+        noise_latents = self.scheduler.add_noise(
+            init_latents, noise, init_timesteps[:padding_num]
+        )
 
         motion_bank = neg_motion_hidden_states
         add_flag = False
         final_videos = []
 
         # padding tgt_images and face_images
-        tgt_images.extend(tgt_images[-padding_num-1:-1][::-1])
-        face_images.extend(face_images[-padding_num-1:-1][::-1])
+        tgt_images.extend(tgt_images[-padding_num - 1 : -1][::-1])
+        face_images.extend(face_images[-padding_num - 1 : -1][::-1])
 
-        with self.progress_bar(total=windows + temporal_adaptive_step - 1) as progress_bar:
+        with self.progress_bar(
+            total=windows + temporal_adaptive_step - 1
+        ) as progress_bar:
             self.reference_unet(
                 ref_image_latents,
-                torch.zeros((batch_size,),dtype=torch.float32,device=ref_image_latents.device),
+                torch.zeros(
+                    (batch_size,), dtype=torch.float32, device=ref_image_latents.device
+                ),
                 encoder_hidden_states=image_prompt_embeds,
                 return_dict=False,
             )
@@ -863,15 +971,21 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
                 tgt_cond_tensor = self.cond_image_processor.preprocess(
                     current_driving, height=256, width=256
                 ).to(device=device, dtype=self.pose_encoder.dtype)  # (1, c, h, w)
-                tgt_cond_tensor = tgt_cond_tensor / 2 + 0.5 # to [0, 1]
+                tgt_cond_tensor = tgt_cond_tensor / 2 + 0.5  # to [0, 1]
 
                 if i == 0:
-                    mot_bbox_param, kps_ref, kps_frame1, _ = self.pose_encoder.interpolate_kps_online(ref_cond_tensor, tgt_cond_tensor, num_interp=padding_num+1)
+                    mot_bbox_param, kps_ref, kps_frame1, _ = (
+                        self.pose_encoder.interpolate_kps_online(
+                            ref_cond_tensor, tgt_cond_tensor, num_interp=padding_num + 1
+                        )
+                    )
                 else:
-                    mot_bbox_param, _ = self.pose_encoder.get_kps(kps_ref, kps_frame1, tgt_cond_tensor)
+                    mot_bbox_param, _ = self.pose_encoder.get_kps(
+                        kps_ref, kps_frame1, tgt_cond_tensor
+                    )
 
                 keypoints = draw_keypoints(mot_bbox_param, device=device)
-                keypoints = rearrange(keypoints.unsqueeze(2), 'f c b h w -> b c f h w')
+                keypoints = rearrange(keypoints.unsqueeze(2), "f c b h w -> b c f h w")
                 keypoints = keypoints.to(device=device, dtype=self.pose_guider.dtype)
 
                 pose_fea = self.pose_guider(keypoints)
@@ -879,7 +993,7 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
                 face_cond_tensor = self.cond_image_processor.preprocess(
                     current_face, height=224, width=224
                 ).transpose(0, 1)
-                face_cond_tensor = face_cond_tensor.unsqueeze(0) # (1, c, t, h, w) 
+                face_cond_tensor = face_cond_tensor.unsqueeze(0)  # (1, c, t, h, w)
                 face_cond_tensor = face_cond_tensor.to(
                     device=device, dtype=self.motion_encoder.dtype
                 )
@@ -887,18 +1001,39 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
                 motion_hidden_state = self.motion_encoder(face_cond_tensor)
 
                 if i == 0:
-                    init_motion_hidden_states = self.interpolate_tensors(neg_motion_hidden_states, motion_hidden_state[:,:1], num=padding_num+1)[:,:-1]
-                    motion_hidden_states = torch.cat([init_motion_hidden_states, motion_hidden_state], dim=1)
+                    init_motion_hidden_states = self.interpolate_tensors(
+                        neg_motion_hidden_states,
+                        motion_hidden_state[:, :1],
+                        num=padding_num + 1,
+                    )[:, :-1]
+                    motion_hidden_states = torch.cat(
+                        [init_motion_hidden_states, motion_hidden_state], dim=1
+                    )
                     pose_feas = pose_fea
 
                 else:
-                    motion_hidden_states = torch.cat([motion_hidden_states[:,temporal_window_size:], motion_hidden_state], dim=1)
-                    pose_feas = torch.cat([pose_feas[:,:,temporal_window_size:], pose_fea], dim=2)
-                
-                if l > temporal_adaptive_step * temporal_window_size * 2 and motion_bank.shape[1] < 4:
-                    add_flag, motion_bank = self.calculate_dis(motion_bank, motion_hidden_state, threshold=17.)
-                
-                latents = ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
+                    motion_hidden_states = torch.cat(
+                        [
+                            motion_hidden_states[:, temporal_window_size:],
+                            motion_hidden_state,
+                        ],
+                        dim=1,
+                    )
+                    pose_feas = torch.cat(
+                        [pose_feas[:, :, temporal_window_size:], pose_fea], dim=2
+                    )
+
+                if (
+                    l > temporal_adaptive_step * temporal_window_size * 2
+                    and motion_bank.shape[1] < 4
+                ):
+                    add_flag, motion_bank = self.calculate_dis(
+                        motion_bank, motion_hidden_state, threshold=17.0
+                    )
+
+                latents = ref_image_latents.unsqueeze(2).repeat(
+                    1, 1, temporal_window_size, 1, 1
+                )
                 noise = torch.randn_like(latents)
                 latents = self.scheduler.add_noise(latents, noise, timesteps[:1])
 
@@ -906,9 +1041,11 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
                 latents_model_input = latents
 
                 for j in range(jump):
-                    ut = reversed(timesteps[j::jump]).repeat_interleave(temporal_window_size, dim=0)
+                    ut = reversed(timesteps[j::jump]).repeat_interleave(
+                        temporal_window_size, dim=0
+                    )
                     ut = torch.stack([ut] * batch_size).to(device)
-                    ut = rearrange(ut, 'b f -> (b f)')
+                    ut = rearrange(ut, "b f -> (b f)")
 
                     noise_pred = self.denoising_unet(
                         latents_model_input,
@@ -921,30 +1058,49 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
                         return_dict=False,
                     )[0]
 
-                    
                     clip_length = noise_pred.shape[2]
-                    mid_noise_pred = rearrange(noise_pred, 'b c f h w -> (b f) c h w')
-                    mid_latents = rearrange(latents_model_input, 'b c f h w -> (b f) c h w')
-                    latents_model_input, pred_original_sample = self.scheduler.step(
-                        mid_noise_pred, ut, mid_latents, **extra_step_kwargs, return_dict=False
+                    mid_noise_pred = rearrange(noise_pred, "b c f h w -> (b f) c h w")
+                    mid_latents = rearrange(
+                        latents_model_input, "b c f h w -> (b f) c h w"
                     )
-                    latents_model_input = rearrange(latents_model_input, '(b f) c h w -> b c f h w', f=clip_length)
-                    pred_original_sample = rearrange(pred_original_sample, '(b f) c h w -> b c f h w', f=clip_length)
+                    latents_model_input, pred_original_sample = self.scheduler.step(
+                        mid_noise_pred,
+                        ut,
+                        mid_latents,
+                        **extra_step_kwargs,
+                        return_dict=False,
+                    )
+                    latents_model_input = rearrange(
+                        latents_model_input, "(b f) c h w -> b c f h w", f=clip_length
+                    )
+                    pred_original_sample = rearrange(
+                        pred_original_sample, "(b f) c h w -> b c f h w", f=clip_length
+                    )
 
-                noise_latents = latents_model_input[:,:,temporal_window_size:].to(dtype=self.dtype)
+                noise_latents = latents_model_input[:, :, temporal_window_size:].to(
+                    dtype=self.dtype
+                )
 
                 if add_flag:
                     reference_control_writer.clear()
                     self.reference_unet(
-                        pred_original_sample[:,:,0].to(self.reference_unet.dtype),
-                        torch.zeros((batch_size,),dtype=torch.float32,device=ref_image_latents.device),
+                        pred_original_sample[:, :, 0].to(self.reference_unet.dtype),
+                        torch.zeros(
+                            (batch_size,),
+                            dtype=torch.float32,
+                            device=ref_image_latents.device,
+                        ),
                         encoder_hidden_states=image_prompt_embeds,
                         return_dict=False,
                     )
                     reference_control_reader.update_hkf(reference_control_writer)
-                
+
                 if i > temporal_adaptive_step - 2:
-                    video_pile = self.decode_latents(pred_original_sample[:,:,:temporal_window_size].to(dtype=self.dtype))
+                    video_pile = self.decode_latents(
+                        pred_original_sample[:, :, :temporal_window_size].to(
+                            dtype=self.dtype
+                        )
+                    )
                     final_videos.append(video_pile)
                 progress_bar.update()
 
@@ -955,8 +1111,8 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
 
             if output_type != "tensor":
                 images = images.numpy()
-            
+
             if not return_dict:
                 return images
-            
+
             return Pose2VideoPipelineOutput(videos=images)
